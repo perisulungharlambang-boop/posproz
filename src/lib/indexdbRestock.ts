@@ -1,0 +1,160 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ * 
+ * ✅ IndexedDB Service untuk Riwayat Restock / Masuk Barang
+ * Mencatat setiap kali stok produk ditambahkan (restock)
+ */
+
+export interface RestockRecord {
+  id: string;
+  productId: string;
+  productName: string;
+  productSku: string;
+  qty: number;
+  priceBuy: number;       // Harga beli per item (opsional)
+  totalCost: number;      // qty * priceBuy
+  stockBefore: number;
+  stockAfter: number;
+  supplierId: string;     // ID Supplier
+  supplierName: string;   // Nama Supplier (denormalisasi)
+  invoiceNumber: string;  // Nomor Faktur / Nota
+  notes: string;
+  created_at: number;
+}
+
+class IndexDBRestock {
+  private dbName: string = "restockDB";
+  private storeName: string = "restocks";
+  private db: IDBDatabase | null = null;
+  private initPromise: Promise<void> | null = null;
+
+  constructor() {}
+
+  private initDb(): Promise<void> {
+    if (this.initPromise) return this.initPromise;
+
+    // ✅ Gunakan versi 2 untuk menambah index supplierId
+    const DB_VERSION = 2;
+
+    this.initPromise = new Promise((resolve, reject) => {
+      if (this.db) {
+        resolve();
+        return;
+      }
+      const request = indexedDB.open(this.dbName, DB_VERSION);
+
+      request.onupgradeneeded = (event) => {
+        const db = (event.target as IDBOpenDBRequest).result;
+        if (!db.objectStoreNames.contains(this.storeName)) {
+          const store = db.createObjectStore(this.storeName, { keyPath: "id" });
+          store.createIndex("productId", "productId", { unique: false });
+          store.createIndex("created_at", "created_at", { unique: false });
+          store.createIndex("supplierId", "supplierId", { unique: false });
+          store.createIndex("invoiceNumber", "invoiceNumber", { unique: false });
+        } else {
+          // ✅ Upgrade from v1 to v2: tambah index jika belum ada
+          try { db.deleteObjectStore(this.storeName); } catch {}
+          const store = db.createObjectStore(this.storeName, { keyPath: "id" });
+          store.createIndex("productId", "productId", { unique: false });
+          store.createIndex("created_at", "created_at", { unique: false });
+          store.createIndex("supplierId", "supplierId", { unique: false });
+          store.createIndex("invoiceNumber", "invoiceNumber", { unique: false });
+        }
+      };
+
+      request.onsuccess = (event) => {
+        this.db = (event.target as IDBOpenDBRequest).result;
+        resolve();
+      };
+
+      request.onerror = (event) => {
+        console.error("IndexedDB restockDB error:", (event.target as IDBOpenDBRequest).error);
+        reject((event.target as IDBOpenDBRequest).error);
+      };
+    });
+
+    return this.initPromise;
+  }
+
+  private getObjectStore(mode: IDBTransactionMode): IDBObjectStore {
+    if (!this.db) throw new Error("Database restock belum diinisialisasi.");
+    const transaction = this.db.transaction(this.storeName, mode);
+    return transaction.objectStore(this.storeName);
+  }
+
+  /**
+   * ✅ Catat restock baru
+   */
+  async add(record: RestockRecord): Promise<void> {
+    return new Promise(async (resolve, reject) => {
+      await this.initDb();
+      const store = this.getObjectStore("readwrite");
+      const request = store.put(record);
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(request.error);
+    });
+  }
+
+  /**
+   * ✅ Ambil semua riwayat restock, diurutkan terbaru
+   */
+  async getAll(): Promise<RestockRecord[]> {
+    return new Promise(async (resolve, reject) => {
+      await this.initDb();
+      const store = this.getObjectStore("readonly");
+      const request = store.getAll();
+      request.onsuccess = () => {
+        const result: RestockRecord[] = request.result || [];
+        result.sort((a, b) => b.created_at - a.created_at);
+        resolve(result);
+      };
+      request.onerror = () => reject(request.error);
+    });
+  }
+
+  /**
+   * ✅ Ambil riwayat restock untuk produk tertentu
+   */
+  async getByProductId(productId: string): Promise<RestockRecord[]> {
+    const all = await this.getAll();
+    return all.filter(r => r.productId === productId);
+  }
+
+  /**
+   * ✅ Ambil riwayat restock hari ini
+   */
+  async getToday(): Promise<RestockRecord[]> {
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const all = await this.getAll();
+    return all.filter(r => r.created_at >= todayStart.getTime());
+  }
+
+  /**
+   * ✅ Hitung total biaya restock hari ini
+   */
+  async getTodayTotalCost(): Promise<number> {
+    const today = await this.getToday();
+    return today.reduce((sum, r) => sum + r.totalCost, 0);
+  }
+
+  /**
+   * ✅ Hapus semua riwayat restock
+   */
+  async clearAll(): Promise<void> {
+    return new Promise(async (resolve, reject) => {
+      await this.initDb();
+      const store = this.getObjectStore("readwrite");
+      const request = store.clear();
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(request.error);
+    });
+  }
+
+  generateId(): string {
+    return `restock_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  }
+}
+
+export const indexdbRestock = new IndexDBRestock();
